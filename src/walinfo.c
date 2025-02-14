@@ -116,7 +116,7 @@ main(int argc, char** argv)
    {
       static struct option long_options[] =
       {
-         {"config", required_argument, 0, 'c'},
+         {"config", optional_argument, 0, 'c'},
          {"output", required_argument, 0, 'o'},
          {"format", required_argument, 0, 'F'},
          {"logfile", required_argument, 0, 'L'},
@@ -139,6 +139,11 @@ main(int argc, char** argv)
       if (c == -1)
       {
          break;
+      }
+
+      if (c != 'c') {
+         configuration_path = "/etc/pgmoneta/pgmoneta.conf";
+         warnx("Configuration is not specified, using default: %s", configuration_path);
       }
 
       switch (c)
