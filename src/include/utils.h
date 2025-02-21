@@ -691,14 +691,13 @@ int
 pgmoneta_get_wal_files(char* base, int* number_of_files, char*** files);
 
 /**
- * Remove a file
+ * Delete a file
  * @param file The file
- * @param force Force the operation
  * @param workers The optional workers
  * @return The result
  */
 int
-pgmoneta_delete_file(char* file, bool force, struct workers* workers);
+pgmoneta_delete_file(char* file, struct workers* workers);
 
 /**
  * Copy a PostgreSQL installation
@@ -1288,6 +1287,14 @@ pgmoneta_escape_string(char* str);
  */
 char*
 pgmoneta_lsn_to_string(uint64_t lsn);
+
+/**
+ * Check if the path to a file is an incremental path
+ * @param path The file path
+ * @return true if the file is an incremental path, false if otherwise
+ */
+bool
+pgmoneta_is_incremental_path(char* path);
 
 #ifdef DEBUG
 

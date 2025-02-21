@@ -89,8 +89,6 @@ cleanup_execute_restore(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_trace("Cleanup (execute): %s/%s", config->servers[server].name, identifier);
-
    label = (char*)pgmoneta_deque_get(nodes, NODE_LABEL);
 
    pgmoneta_log_debug("Cleanup (execute): %s/%s", config->servers[server].name, label);
@@ -108,7 +106,11 @@ cleanup_execute_restore(int server, char* identifier, struct deque* nodes)
 
    if (pgmoneta_exists(path))
    {
-      pgmoneta_delete_file(path, true, NULL);
+      pgmoneta_delete_file(path, NULL);
+   }
+   else
+   {
+      pgmoneta_log_debug("%s doesn't exists", path);
    }
 
    free(path);

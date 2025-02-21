@@ -54,7 +54,7 @@ static int write_socket(int socket, void* buf, size_t size);
 static int write_ssl(SSL* ssl, void* buf, size_t size);
 
 int
-pgmoneta_management_request_backup(SSL* ssl, int socket, char* server, uint8_t compression, uint8_t encryption, int32_t output_format)
+pgmoneta_management_request_backup(SSL* ssl, int socket, char* server, uint8_t compression, uint8_t encryption, char* incremental, int32_t output_format)
 {
    struct json* j = NULL;
    struct json* request = NULL;
@@ -70,6 +70,7 @@ pgmoneta_management_request_backup(SSL* ssl, int socket, char* server, uint8_t c
    }
 
    pgmoneta_json_put(request, MANAGEMENT_ARGUMENT_SERVER, (uintptr_t)server, ValueString);
+   pgmoneta_json_put(request, MANAGEMENT_ARGUMENT_BACKUP, (uintptr_t)incremental, ValueString);
 
    if (pgmoneta_management_write_json(ssl, socket, compression, encryption, j))
    {
@@ -911,6 +912,14 @@ pgmoneta_management_response_error(SSL* ssl, int socket, char* server, int32_t e
       goto error;
    }
 
+   for (int i = 0; i < config->number_of_servers; i++)
+   {
+      if (!strcmp(server, config->servers[i].name))
+      {
+         srv = i;
+      }
+   }
+
    if (server != NULL && strlen(server) > 0)
    {
       if (pgmoneta_json_get(payload, MANAGEMENT_CATEGORY_RESPONSE) != 0)
@@ -919,22 +928,17 @@ pgmoneta_management_response_error(SSL* ssl, int socket, char* server, int32_t e
       }
       else
       {
-         for (int i = 0; i < config->number_of_servers; i++)
-         {
-            if (!strcmp(server, config->servers[i].name))
-            {
-               srv = i;
-            }
-         }
-
          if (pgmoneta_management_create_response(payload, srv, &response))
          {
             goto error;
          }
-
-         pgmoneta_json_put(response, MANAGEMENT_ARGUMENT_SERVER, (uintptr_t)server, ValueString);
       }
    }
+
+   pgmoneta_json_clear(response);
+
+   pgmoneta_json_put(response, MANAGEMENT_ARGUMENT_SERVER, (uintptr_t)server, ValueString);
+   pgmoneta_json_put(response, MANAGEMENT_ARGUMENT_SERVER_VERSION, (uintptr_t)VERSION, ValueString);
 
    if (pgmoneta_management_write_json(ssl, socket, compression, encryption, payload))
    {

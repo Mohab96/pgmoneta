@@ -1775,11 +1775,11 @@ error:
 }
 
 int
-pgmoneta_delete_file(char* file, bool force, struct workers* workers)
+pgmoneta_delete_file(char* file, struct workers* workers)
 {
    struct worker_input* fi = NULL;
 
-   if (pgmoneta_create_worker_input(NULL, file, NULL, 0, true, workers, &fi))
+   if (pgmoneta_create_worker_input(NULL, file, NULL, 0, workers, &fi))
    {
       goto error;
    }
@@ -1806,18 +1806,12 @@ error:
 static void
 do_delete_file(struct worker_input* fi)
 {
-   int ret;
-
-   ret = unlink(fi->from);
+   int ret = unlink(fi->from);
 
    if (ret != 0)
    {
-      if (!fi->force)
-      {
-         pgmoneta_log_warn("pgmoneta_delete_file: %s (%s)", fi->from, strerror(errno));
-      }
+      pgmoneta_log_warn("pgmoneta_delete_file: %s (%s)", fi->from, strerror(errno));
       errno = 0;
-      fi->workers->outcome = false;
    }
 
    free(fi);
@@ -2378,7 +2372,7 @@ pgmoneta_copy_file(char* from, char* to, struct workers* workers)
 {
    struct worker_input* fi = NULL;
 
-   if (pgmoneta_create_worker_input(NULL, from, to, 0, false, workers, &fi))
+   if (pgmoneta_create_worker_input(NULL, from, to, 0, workers, &fi))
    {
       goto error;
    }
@@ -2415,19 +2409,13 @@ do_copy_file(struct worker_input* fi)
 
    if (fd_from < 0)
    {
-      if (!fi->force)
-      {
-         pgmoneta_log_error("File doesn't exists: %s", fi->from);
-      }
+      pgmoneta_log_error("File doesn't exists: %s", fi->from);
       goto error;
    }
 
    if (get_permissions(fi->from, &permissions))
    {
-      if (!fi->force)
-      {
-         pgmoneta_log_error("Unable to get file permissions: %s", fi->from);
-      }
+      pgmoneta_log_error("Unable to get file permissions: %s", fi->from);
       goto error;
    }
 
@@ -2435,10 +2423,7 @@ do_copy_file(struct worker_input* fi)
 
    if (fd_to < 0)
    {
-      if (!fi->force)
-      {
-         pgmoneta_log_error("Unable to create file: %s", fi->to);
-      }
+      pgmoneta_log_error("Unable to create file: %s", fi->to);
       goto error;
    }
 
@@ -2500,8 +2485,6 @@ error:
    }
 
    errno = 0;
-
-   fi->workers->outcome = false;
 
    free(fi);
 }
@@ -2590,9 +2573,12 @@ pgmoneta_translate_file_size(uint64_t size)
 bool
 pgmoneta_exists(char* f)
 {
-   if (access(f, F_OK) == 0)
+   if (f != NULL)
    {
-      return true;
+      if (access(f, F_OK) == 0)
+      {
+         return true;
+      }
    }
 
    return false;
@@ -3128,6 +3114,10 @@ error:
 bool
 pgmoneta_starts_with(char* str, char* prefix)
 {
+   if (str == NULL)
+   {
+      return false;
+   }
    return strncmp(prefix, str, strlen(prefix)) == 0;
 }
 
@@ -4388,6 +4378,30 @@ pgmoneta_lsn_to_string(uint64_t lsn)
    memset(result, 0, 64);
    snprintf(result, 64, "%X/%X", (uint32_t)(lsn >> 32), (uint32_t)lsn);
    return result;
+}
+
+bool
+pgmoneta_is_incremental_path(char* path)
+{
+   char* name;
+   int len = 0;
+   int seglen = 0;
+   if (path == NULL)
+   {
+      return false;
+   }
+   len = strlen(path);
+   // extract the last segment
+   for (int i = len - 1; i >= 0; i--)
+   {
+      if (path[i] == '/')
+      {
+         break;
+      }
+      seglen++;
+   }
+   name = path + (len - seglen);
+   return pgmoneta_starts_with(name, INCREMENTAL_PREFIX);
 }
 
 #ifdef DEBUG
