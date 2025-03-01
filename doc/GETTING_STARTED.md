@@ -92,7 +92,7 @@ like
 SELECT pg_create_physical_replication_slot('repl', true, false);
 ```
 
-Alternatively, configure automatically slot creation by adding `create_slot = yes` to `[pgmoneta]` 
+Alternatively, configure automatically slot creation by adding `create_slot = yes` to `[pgmoneta]`
 or corresponding server section
 
 We will need a user vault for the `repl` account, so the following commands will add
@@ -148,27 +148,32 @@ Options:
   -?, --help                                      Display help
 
 Commands:
-  backup                   Backup a server
-  list-backup              List the backups for a server
-  restore                  Restore a backup from a server
-  verify                   Verify a backup from a server
-  archive                  Archive a backup from a server
-  delete                   Delete a backup from a server
-  retain                   Retain a backup from a server
-  expunge                  Expunge a backup from a server
-  encrypt                  Encrypt a file using master-key
-  decrypt                  Decrypt a file using master-key
-  compress                 Compress a file using configured method
-  decompress               Decompress a file using configured method
-  info                     Information about a backup
   annotate                 Annotate a backup with comments
-  ping                     Check if pgmoneta is alive
-  shutdown                 Shutdown pgmoneta
-  status [details]         Status of pgmoneta, with optional details
-  conf <action>            Manage the configuration, with one of subcommands:
-                           - 'reload' to reload the configuration
+  archive                  Archive a backup from a server
+  backup                   Backup a server
   clear <what>             Clear data, with:
                            - 'prometheus' to reset the Prometheus statistics
+  compress                 Compress a file using configured method
+  conf <action>            Manage the configuration, with one of subcommands:
+                           - 'get' to obtain information about a runtime configuration value
+                             conf get <parameter_name>
+                           - 'ls' to print the configurations used
+                           - 'reload' to reload the configuration
+                           - 'set' to modify a configuration value;
+                             conf set <parameter_name> <parameter_value>;
+  decompress               Decompress a file using configured method
+  decrypt                  Decrypt a file using master-key
+  delete                   Delete a backup from a server
+  encrypt                  Encrypt a file using master-key
+  expunge                  Expunge a backup from a server
+  info                     Information about a backup
+  list-backup              List the backups for a server
+  ping                     Check if pgmoneta is alive
+  restore                  Restore a backup from a server
+  retain                   Retain a backup from a server
+  shutdown                 Shutdown pgmoneta
+  status [details]         Status of pgmoneta, with optional details
+  verify                   Verify a backup from a server
 ```
 
 This tool can be used on the machine running `pgmoneta` to do a backup like
@@ -240,13 +245,17 @@ In order to set the master key for all users you can use
 pgmoneta-admin -g master-key
 ```
 
-The master key must be at least 8 characters.
+The master key must be at least 8 characters if provided interactively.
+
+For scripted use, the master key can be provided using the `PGMONETA_PASSWORD` environment variable.
 
 Then use the other commands to add, update, remove or list the current user names, f.ex.
 
 ```
 pgmoneta-admin -f pgmoneta_users.conf user add
 ```
+
+For scripted use, the user password can be provided using the `PGMONETA_PASSWORD` environment variable.
 
 ## Next Steps
 

@@ -25,6 +25,8 @@
  * TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#include <pgmoneta.h>
+#include <art.h>
 #include <csv.h>
 #include <json.h>
 #include <logging.h>
@@ -32,13 +34,13 @@
 #include <utils.h>
 #include <workflow.h>
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int manifest_setup(int, char*, struct deque*);
-static int manifest_execute_build(int, char*, struct deque*);
-static int manifest_teardown(int, char*, struct deque*);
+static char* manifest_name(void);
+static int manifest_execute(char*, struct art*);
 
 struct workflow*
 pgmoneta_create_manifest(void)
@@ -52,30 +54,26 @@ pgmoneta_create_manifest(void)
       return NULL;
    }
 
-   wf->setup = &manifest_setup;
-   wf->execute = &manifest_execute_build;
-   wf->teardown = &manifest_teardown;
+   wf->name = &manifest_name;
+   wf->setup = &pgmoneta_common_setup;
+   wf->execute = &manifest_execute;
+   wf->teardown = &pgmoneta_common_teardown;
    wf->next = NULL;
 
    return wf;
 }
 
-static int
-manifest_setup(int server, char* identifier, struct deque* nodes)
+static char *
+manifest_name(void)
 {
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Manifest (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
+   return "Manifest";
 }
 
 static int
-manifest_execute_build(int server, char* identifier, struct deque* nodes)
+manifest_execute(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    struct timespec start_t;
    struct timespec end_t;
    double manifest_elapsed_time;
@@ -96,17 +94,28 @@ manifest_execute_build(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("Manifest (execute): %s/%s", config->servers[server].name, identifier);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
 
-   if (pgmoneta_workflow_nodes(server, identifier, nodes, &backup))
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("Manifest (execute): %s/%s", config->servers[server].name, label);
+
+   if (pgmoneta_workflow_nodes(server, label, nodes, &backup))
    {
       goto error;
    }
 
-   pgmoneta_deque_list(nodes);
-
-   backup_base = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_BASE);
-   backup_data = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_DATA);
+   backup_base = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_BASE);
+   backup_data = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_DATA);
 
    manifest = pgmoneta_append(manifest, backup_base);
    if (!pgmoneta_ends_with(manifest, "/"))
@@ -172,17 +181,4 @@ error:
    free(manifest_orig);
 
    return 1;
-}
-
-static int
-manifest_teardown(int server, char* identifier, struct deque* nodes)
-{
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Manifest (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
 }

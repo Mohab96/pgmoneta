@@ -28,19 +28,21 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <hot_standby.h>
 #include <logging.h>
 #include <manifest.h>
 #include <utils.h>
 #include <workers.h>
+#include <workflow.h>
 
 /* system */
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int hot_standby_setup(int, char*, struct deque*);
-static int hot_standby_execute(int, char*, struct deque*);
-static int hot_standby_teardown(int, char*, struct deque*);
+static char* hot_standby_name(void);
+static int hot_standby_execute(char*, struct art*);
 
 struct workflow*
 pgmoneta_create_hot_standby(void)
@@ -54,30 +56,26 @@ pgmoneta_create_hot_standby(void)
       return NULL;
    }
 
-   wf->setup = &hot_standby_setup;
+   wf->name = &hot_standby_name;
+   wf->setup = &pgmoneta_common_setup;
    wf->execute = &hot_standby_execute;
-   wf->teardown = &hot_standby_teardown;
+   wf->teardown = &pgmoneta_common_teardown;
    wf->next = NULL;
 
    return wf;
 }
 
-static int
-hot_standby_setup(int server, char* identifier, struct deque* nodes)
+static char *
+hot_standby_name(void)
 {
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Hot standby (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
+   return "Hot standby";
 }
 
 static int
-hot_standby_execute(int server, char* identifier, struct deque* nodes)
+hot_standby_execute(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    char* root = NULL;
    char* base = NULL;
    char* source = NULL;
@@ -108,8 +106,20 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("Hot standby (execute): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
+
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("Hot standby (execute): %s/%s", config->servers[server].name, label);
 
    if (strlen(config->servers[server].hot_standby) > 0)
    {
@@ -178,7 +188,7 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
             {
                f = pgmoneta_append_char(f, '/');
             }
-            f = pgmoneta_append(f, (char*)deleted_iter->key);
+            f = pgmoneta_append(f, deleted_iter->key);
 
             if (pgmoneta_exists(f))
             {
@@ -201,14 +211,14 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
                from = pgmoneta_append_char(from, '/');
             }
             from = pgmoneta_append(from, "data/");
-            from = pgmoneta_append(from, (char*)changed_iter->key);
+            from = pgmoneta_append(from, changed_iter->key);
 
             to = pgmoneta_append(to, destination);
             if (!pgmoneta_ends_with(to, "/"))
             {
                to = pgmoneta_append_char(to, '/');
             }
-            to = pgmoneta_append(to, (char*)changed_iter->key);
+            to = pgmoneta_append(to, changed_iter->key);
 
             pgmoneta_log_trace("hot_standby changed: %s -> %s", from, to);
 
@@ -229,14 +239,14 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
                from = pgmoneta_append_char(from, '/');
             }
             from = pgmoneta_append(from, "data/");
-            from = pgmoneta_append(from, (char*)added_iter->key);
+            from = pgmoneta_append(from, added_iter->key);
 
             to = pgmoneta_append(to, destination);
             if (!pgmoneta_ends_with(to, "/"))
             {
                to = pgmoneta_append_char(to, '/');
             }
-            to = pgmoneta_append(to, (char*)added_iter->key);
+            to = pgmoneta_append(to, added_iter->key);
 
             pgmoneta_log_trace("hot_standby new: %s -> %s", from, to);
 
@@ -257,7 +267,7 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
          }
 
          source = pgmoneta_append(source, base);
-         source = pgmoneta_append(source, identifier);
+         source = pgmoneta_append(source, label);
          source = pgmoneta_append_char(source, '/');
          source = pgmoneta_append(source, "data");
 
@@ -312,7 +322,7 @@ hot_standby_execute(int server, char* identifier, struct deque* nodes)
       memset(&elapsed[0], 0, sizeof(elapsed));
       sprintf(&elapsed[0], "%02i:%02i:%.4f", hours, minutes, seconds);
 
-      pgmoneta_log_debug("Hot standby: %s/%s (Elapsed: %s)", config->servers[server].name, identifier, &elapsed[0]);
+      pgmoneta_log_debug("Hot standby: %s/%s (Elapsed: %s)", config->servers[server].name, label, &elapsed[0]);
    }
 
    free(old_manifest);
@@ -364,17 +374,4 @@ error:
    free(destination);
 
    return 1;
-}
-
-static int
-hot_standby_teardown(int server, char* identifier, struct deque* nodes)
-{
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Hot standby (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
 }

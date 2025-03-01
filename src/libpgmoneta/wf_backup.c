@@ -28,6 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <backup.h>
 #include <info.h>
 #include <logging.h>
@@ -43,13 +44,13 @@
 #include <workflow.h>
 
 /* system */
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int basebackup_setup(int, char*, struct deque*);
-static int basebackup_execute(int, char*, struct deque*);
-static int basebackup_teardown(int, char*, struct deque*);
+static char* basebackup_name(void);
+static int basebackup_execute(char*, struct art*);
 
 static int send_upload_manifest(SSL* ssl, int socket);
 static int upload_manifest(SSL* ssl, int socket, char* path);
@@ -66,30 +67,26 @@ pgmoneta_create_basebackup(void)
       return NULL;
    }
 
-   wf->setup = &basebackup_setup;
+   wf->name = &basebackup_name;
+   wf->setup = &pgmoneta_common_setup;
    wf->execute = &basebackup_execute;
-   wf->teardown = &basebackup_teardown;
+   wf->teardown = &pgmoneta_common_teardown;
    wf->next = NULL;
 
    return wf;
 }
 
-static int
-basebackup_setup(int server, char* identifier, struct deque* nodes)
+static char *
+basebackup_name(void)
 {
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Basebackup (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
+   return "Base backup";
 }
 
 static int
-basebackup_execute(int server, char* identifier, struct deque* nodes)
+basebackup_execute(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    struct timespec start_t;
    struct timespec end_t;
    int status;
@@ -105,7 +102,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
    double seconds;
    char elapsed[128];
    int number_of_tablespaces = 0;
-   char* label = NULL;
+   char* tag = NULL;
    char* incremental = NULL;
    char* incremental_label = NULL;
    char* manifest_path = NULL;
@@ -135,12 +132,24 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("Basebackup (execute): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
+
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("Basebackup (execute): %s", config->servers[server].name, label);
 
    clock_gettime(CLOCK_MONOTONIC_RAW, &start_t);
-   incremental = (char*)pgmoneta_deque_get(nodes, "IncrementalBase");
-   incremental_label = (char*)pgmoneta_deque_get(nodes, "IncrementalLabel");
+   incremental = (char*)pgmoneta_art_search(nodes, NODE_INCREMENTAL_BASE);
+   incremental_label = (char*)pgmoneta_art_search(nodes, NODE_INCREMENTAL_LABEL);
 
    if ((incremental != NULL && incremental_label == NULL) ||
        (incremental == NULL && incremental_label != NULL))
@@ -270,8 +279,8 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
       response = NULL;
    }
 
-   label = pgmoneta_append(label, "pgmoneta_");
-   label = pgmoneta_append(label, identifier);
+   tag = pgmoneta_append(tag, "pgmoneta_");
+   tag = pgmoneta_append(tag, label);
 
    hash = config->servers[server].manifest;
    if (hash == HASH_ALGORITHM_DEFAULT)
@@ -279,7 +288,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
       hash = config->manifest;
    }
 
-   pgmoneta_create_base_backup_message(config->servers[server].version, incremental != NULL, label, true, hash,
+   pgmoneta_create_base_backup_message(config->servers[server].version, incremental != NULL, tag, true, hash,
                                        config->compression_type, config->compression_level,
                                        &basebackup_msg);
 
@@ -301,7 +310,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
    response = NULL;
 
    // create the root dir
-   backup_base = pgmoneta_get_server_backup_identifier(server, identifier);
+   backup_base = pgmoneta_get_server_backup_identifier(server, label);
 
    pgmoneta_mkdir(backup_base);
    if (config->servers[server].version < 15)
@@ -310,7 +319,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
       {
          pgmoneta_log_error("Backup: Could not backup %s", config->servers[server].name);
 
-         pgmoneta_create_info(backup_base, identifier, 0);
+         pgmoneta_create_info(backup_base, label, 0);
 
          goto error;
       }
@@ -321,7 +330,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
       {
          pgmoneta_log_error("Backup: Could not backup %s", config->servers[server].name);
 
-         pgmoneta_create_info(backup_base, identifier, 0);
+         pgmoneta_create_info(backup_base, label, 0);
 
          goto error;
       }
@@ -374,26 +383,26 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
    memset(&elapsed[0], 0, sizeof(elapsed));
    sprintf(&elapsed[0], "%02i:%02i:%.4f", hours, minutes, seconds);
 
-   pgmoneta_log_debug("Base: %s/%s (Elapsed: %s)", config->servers[server].name, identifier, &elapsed[0]);
+   pgmoneta_log_debug("Base: %s/%s (Elapsed: %s)", config->servers[server].name, label, &elapsed[0]);
 
-   backup_data = pgmoneta_get_server_backup_identifier_data(server, identifier);
+   backup_data = pgmoneta_get_server_backup_identifier_data(server, label);
 
    size = pgmoneta_directory_size(backup_data);
    pgmoneta_read_wal(backup_data, &wal);
    pgmoneta_read_checkpoint_info(backup_data, &chkptpos);
    biggest_file_size = pgmoneta_biggest_file(backup_data);
 
-   if (pgmoneta_deque_add(nodes, NODE_BACKUP_BASE, (uintptr_t)backup_base, ValueString))
+   if (pgmoneta_art_insert(nodes, NODE_BACKUP_BASE, (uintptr_t)backup_base, ValueString))
    {
       goto error;
    }
 
-   if (pgmoneta_deque_add(nodes, NODE_BACKUP_DATA, (uintptr_t)backup_data, ValueString))
+   if (pgmoneta_art_insert(nodes, NODE_BACKUP_DATA, (uintptr_t)backup_data, ValueString))
    {
       goto error;
    }
 
-   pgmoneta_create_info(backup_base, identifier, 1);
+   pgmoneta_create_info(backup_base, label, 1);
    pgmoneta_update_info_string(backup_base, INFO_WAL, wal);
    pgmoneta_update_info_unsigned_long(backup_base, INFO_RESTORE, size);
    pgmoneta_update_info_unsigned_long(backup_base, INFO_BIGGEST_FILE, biggest_file_size);
@@ -461,7 +470,7 @@ basebackup_execute(int server, char* identifier, struct deque* nodes)
    free(backup_data);
    free(manifest_path);
    free(chkptpos);
-   free(label);
+   free(tag);
    free(wal);
 
    return 0;
@@ -470,7 +479,7 @@ error:
 
    if (backup_base == NULL)
    {
-      backup_base = pgmoneta_get_server_backup_identifier(server, identifier);
+      backup_base = pgmoneta_get_server_backup_identifier(server, label);
    }
 
    if (pgmoneta_exists(backup_base))
@@ -496,23 +505,10 @@ error:
    free(backup_data);
    free(manifest_path);
    free(chkptpos);
-   free(label);
+   free(tag);
    free(wal);
 
    return 1;
-}
-
-static int
-basebackup_teardown(int server, char* identifier, struct deque* nodes)
-{
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Basebackup (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
 }
 
 static int

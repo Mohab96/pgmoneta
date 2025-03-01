@@ -28,22 +28,26 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
-#include <dirent.h>
+#include <art.h>
 #include <http.h>
 #include <info.h>
 #include <logging.h>
 #include <security.h>
-#include <stdio.h>
 #include <storage.h>
 #include <utils.h>
+#include <workflow.h>
 
 /* system */
+#include <assert.h>
+#include <dirent.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int s3_storage_setup(int, char*, struct deque*);
-static int s3_storage_execute(int, char*, struct deque*);
-static int s3_storage_teardown(int, char*, struct deque*);
+static char* s3_storage_name(void);
+static int s3_storage_setup(char*, struct art*);
+static int s3_storage_execute(char*, struct art*);
+static int s3_storage_teardown(char*, struct art*);
 
 static int s3_upload_files(char* local_root, char* s3_root, char* relative_path);
 static int s3_send_upload_request(char* local_root, char* s3_root, char* relative_path);
@@ -60,6 +64,7 @@ pgmoneta_storage_create_s3(void)
 
    wf = (struct workflow*)malloc(sizeof(struct workflow));
 
+   wf->name = &s3_storage_name;
    wf->setup = &s3_storage_setup;
    wf->execute = &s3_storage_execute;
    wf->teardown = &s3_storage_teardown;
@@ -68,15 +73,35 @@ pgmoneta_storage_create_s3(void)
    return wf;
 }
 
-static int
-s3_storage_setup(int server, char* identifier, struct deque* nodes)
+static char*
+s3_storage_name(void)
 {
+   return "S3";
+}
+
+static int
+s3_storage_setup(char* name, struct art* nodes)
+{
+   int server = -1;
+   char* label = NULL;
    struct configuration* config;
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("S3 storage engine (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
+
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("S3 storage engine (setup): %s/%s", config->servers[server].name, label);
 
    curl = curl_easy_init();
    if (curl == NULL)
@@ -91,8 +116,10 @@ error:
 }
 
 static int
-s3_storage_execute(int server, char* identifier, struct deque* nodes)
+s3_storage_execute(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    struct timespec start_t;
    struct timespec end_t;
    double remote_s3_elapsed_time;
@@ -104,11 +131,23 @@ s3_storage_execute(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("S3 storage engine (execute): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
 
-   local_root = pgmoneta_get_server_backup_identifier(server, identifier);
-   s3_root = s3_get_basepath(server, identifier);
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("S3 storage engine (execute): %s/%s", config->servers[server].name, label);
+
+   local_root = pgmoneta_get_server_backup_identifier(server, label);
+   s3_root = s3_get_basepath(server, label);
 
    if (s3_upload_files(local_root, s3_root, ""))
    {
@@ -134,17 +173,31 @@ error:
 }
 
 static int
-s3_storage_teardown(int server, char* identifier, struct deque* nodes)
+s3_storage_teardown(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    char* root = NULL;
    struct configuration* config;
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("S3 storage engine (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
 
-   root = pgmoneta_get_server_backup_identifier_data(server, identifier);
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("S3 storage engine (teardown): %s/%s", config->servers[server].name, label);
+
+   root = pgmoneta_get_server_backup_identifier_data(server, label);
 
    pgmoneta_delete_directory(root);
 

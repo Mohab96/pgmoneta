@@ -33,7 +33,7 @@
 extern "C" {
 #endif
 
-#include <deque.h>
+#include <art.h>
 #include <info.h>
 
 #include <stdlib.h>
@@ -52,43 +52,45 @@ extern "C" {
 #define PERMISSION_TYPE_BACKUP              0
 #define PERMISSION_TYPE_RESTORE             1
 #define PERMISSION_TYPE_ARCHIVE             2
-#define PERMISSION_TYPE_RESTORE_INCREMENTAL 3
 
-#define CLEANUP_TYPE_RESTORE             0
+#define CLEANUP_TYPE_RESTORE                0
 
-#define NODE_ALL           "all"
-#define NODE_BACKUP        "backup"
-#define NODE_BACKUP_BASE   "backup_base"
-#define NODE_BACKUP_DATA   "backup_data"
-#define NODE_DESTINATION   "destination"
-#define NODE_DIRECTORY     "directory"
-#define NODE_FAILED        "failed"
-#define NODE_FILES         "files"
-#define NODE_IDENTIFIER    "identifier"
-#define NODE_LABEL         "label"
-#define NODE_OUTPUT        "output"
-#define NODE_POSITION      "position"
-#define NODE_PRIMARY       "primary"
-#define NODE_RECOVERY_INFO "recovery_info"
-#define NODE_SERVER_BACKUP "server_backup"
-#define NODE_SERVER_BASE   "server_base"
-#define NODE_TARFILE       "tarfile"
-#define NODE_BACKUPS       "backups"
-#define NODE_COMBINE_BASE  "combine_base" // the base directory that contains combine output directory
-#define NODE_MANIFEST      "manifest"
+#define NODE_ALL               "all"               /* All the files in a manifest */
+#define NODE_BACKUP            "backup"            /* The backup structure */
+#define NODE_BACKUPS           "backups"           /* A list of backups */
+#define NODE_BACKUP_BASE       "backup_base"       /* The base directory of the backup */
+#define NODE_BACKUP_DATA       "backup_data"       /* The data directory of the backup */
+#define NODE_FAILED            "failed"            /* The failed files in a manifest */
+#define NODE_FILES             "files"             /* The files */
+#define NODE_IDENTIFIER        "identifier"        /* The backup identifier (oldest, newest, <timestamp>) */
+#define NODE_INCREMENTAL_BASE  "incremental_base"  /* The base directory of incremental */
+#define NODE_INCREMENTAL_LABEL "incremental_label" /* The label of the incremental backup */
+#define NODE_LABEL             "label"             /* The backup label */
+#define NODE_MANIFEST          "manifest"          /* The manifest */
+#define NODE_POSITION          "position"          /* The recovery positions */
+#define NODE_PRIMARY           "primary"           /* Is the server a primary */
+#define NODE_RECOVERY_INFO     "recovery_info"     /* The recovery information */
+#define NODE_SERVER            "server"            /* The server number */
+#define NODE_SERVER_BACKUP     "server_backup"     /* The backup directory of the server */
+#define NODE_SERVER_BASE       "server_base"       /* The base directory of the server */
+#define NODE_TARGET_BASE       "target_base"       /* The target base directory */
+#define NODE_TARGET_FILE       "target_file"       /* The target file */
+#define NODE_TARGET_ROOT       "target_root"       /* The target root directory */
 
-typedef int (* setup)(int, char*, struct deque*);
-typedef int (* execute)(int, char*, struct deque*);
-typedef int (* teardown)(int, char*, struct deque*);
+typedef char* (*name)(void);
+typedef int (*setup)(char*, struct art*);
+typedef int (*execute)(char*, struct art*);
+typedef int (*teardown)(char*, struct art*);
 
 /** @struct workflow
  * Defines a workflow
  */
 struct workflow
 {
-   setup setup;           /**< The setup  function pointer */
-   execute execute;       /**< The execute function pointer */
-   teardown teardown;     /**< The taerdown function pointer */
+   name name;        /**< The setup  function pointer */
+   setup setup;      /**< The setup  function pointer */
+   execute execute;  /**< The execute function pointer */
+   teardown teardown; /**< The taerdown function pointer */
 
    struct workflow* next; /**< The next workflow */
 };
@@ -112,7 +114,7 @@ pgmoneta_workflow_create(int workflow_type, int server, struct backup* backup);
  * @return 0 upon success, otherwise 1
  */
 int
-pgmoneta_workflow_nodes(int server, char* identifier, struct deque* nodes, struct backup** backup);
+pgmoneta_workflow_nodes(int server, char* identifier, struct art* nodes, struct backup** backup);
 
 /**
  * Destroy the workflow
@@ -121,6 +123,24 @@ pgmoneta_workflow_nodes(int server, char* identifier, struct deque* nodes, struc
  */
 int
 pgmoneta_workflow_destroy(struct workflow* workflow);
+
+/**
+ * A common minimal setup
+ * @param name The name
+ * @param nodes The nodes
+ * @return 0 upon success, otherwise 1
+ */
+int
+pgmoneta_common_setup(char* name, struct art* nodes);
+
+/**
+ * A common minimal teardown
+ * @param name The name
+ * @param nodes The nodes
+ * @return 0 upon success, otherwise 1
+ */
+int
+pgmoneta_common_teardown(char* name, struct art* nodes);
 
 #ifdef __cplusplus
 }

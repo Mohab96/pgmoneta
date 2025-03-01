@@ -28,6 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <deque.h>
 #include <info.h>
 #include <link.h>
@@ -37,13 +38,13 @@
 #include <workflow.h>
 
 /* system */
+#include <assert.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <strings.h>
 
-static int delete_backup_setup(int, char*, struct deque*);
-static int delete_backup_execute(int, char*, struct deque*);
-static int delete_backup_teardown(int, char*, struct deque*);
+static char* delete_name(void);
+static int delete_backup_execute(char*, struct art*);
 
 static int delete_full_backup(int server, int index, struct backup* backup, int number_of_backups, struct backup** backups);
 static int delete_incremental_backup(int server, int index, struct backup* backup, int number_of_backups, struct backup** backups);
@@ -60,30 +61,25 @@ pgmoneta_create_delete_backup(void)
       return NULL;
    }
 
-   wf->setup = &delete_backup_setup;
+   wf->name = &delete_name;
+   wf->setup = &pgmoneta_common_setup;
    wf->execute = &delete_backup_execute;
-   wf->teardown = &delete_backup_teardown;
+   wf->teardown = &pgmoneta_common_teardown;
    wf->next = NULL;
 
    return wf;
 }
 
-static int
-delete_backup_setup(int server, char* identifier, struct deque* nodes)
+static char *
+delete_name(void)
 {
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Delete (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
+   return "Delete";
 }
 
 static int
-delete_backup_execute(int server, char* identifier, struct deque* nodes)
+delete_backup_execute(char* name, struct art* nodes)
 {
+   int server = -1;
    bool active = false;
    int backup_index = -1;
    char* label = NULL;
@@ -96,35 +92,26 @@ delete_backup_execute(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("Delete (execute): %s/%s", config->servers[server].name, identifier);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
 
-   backup = (struct backup*)pgmoneta_deque_get(nodes, NODE_BACKUP);
-   if (backup != NULL)
-   {
-      free(backup);
-      backup = NULL;
-   }
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
 
-   pgmoneta_deque_remove(nodes, NODE_IDENTIFIER);
-   pgmoneta_deque_remove(nodes, NODE_SERVER_BASE);
-   pgmoneta_deque_remove(nodes, NODE_SERVER_BACKUP);
-   pgmoneta_deque_remove(nodes, NODE_BACKUP);
-   pgmoneta_deque_remove(nodes, NODE_BACKUP_BASE);
-   pgmoneta_deque_remove(nodes, NODE_BACKUP_DATA);
-   pgmoneta_deque_remove(nodes, NODE_LABEL);
-
-   if (pgmoneta_workflow_nodes(server, identifier, nodes, &backup))
-   {
-      goto error;
-   }
-
-   pgmoneta_deque_list(nodes);
+   pgmoneta_log_debug("Delete (execute): %s/%s", config->servers[server].name, label);
 
    active = false;
 
    if (!atomic_compare_exchange_strong(&config->servers[server].delete, &active, true))
    {
-      pgmoneta_log_debug("Delete is active for %s (Waiting for %s)", config->servers[server].name, identifier);
+      pgmoneta_log_debug("Delete is active for %s (Waiting for %s)", config->servers[server].name, label);
       goto error;
    }
 
@@ -144,12 +131,10 @@ delete_backup_execute(int server, char* identifier, struct deque* nodes)
    free(d);
    d = NULL;
 
-   label = (char*)pgmoneta_deque_get(nodes, NODE_LABEL);
-
    /* Find backup index */
    for (int i = 0; backup_index == -1 && i < number_of_backups; i++)
    {
-      if (backups[i] != NULL && !strcmp(backups[i]->label, label))
+      if (!strcmp(backups[i]->label, label))
       {
          backup_index = i;
       }
@@ -157,21 +142,13 @@ delete_backup_execute(int server, char* identifier, struct deque* nodes)
 
    if (backup_index == -1)
    {
-      pgmoneta_log_error("Delete: No identifier for %s/%s", config->servers[server].name, identifier);
+      pgmoneta_log_error("Delete: No identifier for %s/%s", config->servers[server].name, label);
       goto error;
    }
 
    if (backups[backup_index]->keep)
    {
-      pgmoneta_log_error("Delete: Backup is retained for %s/%s",
-                         config->servers[server].name, label);
-      goto error;
-   }
-
-   pgmoneta_get_backup_child(server, backups[backup_index], &child);
-   if (child != NULL)
-   {
-      pgmoneta_log_error("Delete: Backup has a child incremental backup %s", child->label);
+      pgmoneta_log_error("Delete: Backup is retained for %s/%s", config->servers[server].name, label);
       goto error;
    }
 
@@ -185,6 +162,13 @@ delete_backup_execute(int server, char* identifier, struct deque* nodes)
    }
    else
    {
+      pgmoneta_get_backup_child(server, backups[backup_index], &child);
+      if (child != NULL)
+      {
+         pgmoneta_log_error("Delete: Backup has a child incremental backup %s", child->label);
+         goto error;
+      }
+
       if (delete_incremental_backup(server, backup_index, backups[backup_index], number_of_backups, backups))
       {
          pgmoneta_log_error("Delete: Incremental backup error for %s/%s", config->servers[server].name, label);
@@ -199,46 +183,45 @@ delete_backup_execute(int server, char* identifier, struct deque* nodes)
       free(backups[i]);
    }
    free(backups);
-
    free(backup);
 
-   if (strlen(config->servers[server].hot_standby) > 0)
-   {
-      char* srv = NULL;
-      char* hs = NULL;
+   /* if (strlen(config->servers[server].hot_standby) > 0) */
+   /* { */
+   /*    char* srv = NULL; */
+   /*    char* hs = NULL; */
 
-      srv = pgmoneta_get_server_backup(server);
+   /*    srv = pgmoneta_get_server_backup(server); */
 
-      if (pgmoneta_get_backups(d, &number_of_backups, &backups))
-      {
-         goto error;
-      }
+   /*    if (pgmoneta_get_backups(d, &number_of_backups, &backups)) */
+   /*    { */
+   /*       goto error; */
+   /*    } */
 
-      if (number_of_backups == 0)
-      {
-         hs = pgmoneta_append(hs, config->servers[server].hot_standby);
-         if (!pgmoneta_ends_with(hs, "/"))
-         {
-            hs = pgmoneta_append_char(hs, '/');
-         }
+   /*    if (number_of_backups == 0) */
+   /*    { */
+   /*       hs = pgmoneta_append(hs, config->servers[server].hot_standby); */
+   /*       if (!pgmoneta_ends_with(hs, "/")) */
+   /*       { */
+   /*          hs = pgmoneta_append_char(hs, '/'); */
+   /*       } */
 
-         if (pgmoneta_exists(hs))
-         {
-            pgmoneta_delete_directory(hs);
+   /*       if (pgmoneta_exists(hs)) */
+   /*       { */
+   /*          pgmoneta_delete_directory(hs); */
 
-            pgmoneta_log_info("Hot standby deleted: %s", config->servers[server].name);
-         }
-      }
+   /*          pgmoneta_log_info("Hot standby deleted: %s", config->servers[server].name); */
+   /*       } */
+   /*    } */
 
-      for (int i = 0; i < number_of_backups; i++)
-      {
-         free(backups[i]);
-      }
-      free(backups);
+   /*    for (int i = 0; i < number_of_backups; i++) */
+   /*    { */
+   /*       free(backups[i]); */
+   /*    } */
+   /*    free(backups); */
 
-      free(srv);
-      free(hs);
-   }
+   /*    free(srv); */
+   /*    free(hs); */
+   /* } */
 
    free(d);
 
@@ -255,7 +238,6 @@ error:
       free(backups[i]);
    }
    free(backups);
-
    free(backup);
 
    free(d);
@@ -266,19 +248,6 @@ error:
    pgmoneta_log_trace("Delete is ready for %s", config->servers[server].name);
 
    return 1;
-}
-
-static int
-delete_backup_teardown(int server, char* identifier, struct deque* nodes)
-{
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("Delete (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
 }
 
 static int

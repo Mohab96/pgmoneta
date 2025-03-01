@@ -28,6 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <delete.h>
 #include <deque.h>
 #include <info.h>
@@ -37,14 +38,16 @@
 #include <workflow.h>
 
 /* system */
+#include <assert.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 
-static int retention_setup(int, char*, struct deque*);
-static int retention_execute(int, char*, struct deque*);
-static int retention_teardown(int, char*, struct deque*);
+static char* retention_name(void);
+static int retention_setup(char*, struct art *);
+static int retention_execute(char*, struct art*);
+static int retention_teardown(char*, struct art*);
 static void mark_retention(int server, int retention_days, int retention_weeks, int retention_months,
                            int retention_years, int number_of_backups, struct backup** backups, bool** retention_flags);
 
@@ -60,6 +63,7 @@ pgmoneta_create_retention(void)
       return NULL;
    }
 
+   wf->name = &retention_name;
    wf->setup = &retention_setup;
    wf->execute = &retention_execute;
    wf->teardown = &retention_teardown;
@@ -68,25 +72,37 @@ pgmoneta_create_retention(void)
    return wf;
 }
 
+static char *
+retention_name(void)
+{
+   return "Retention";
+}
+
 static int
-retention_setup(int server, char* identifier, struct deque* nodes)
+retention_setup(char* name, struct art* nodes)
 {
    struct configuration* config;
 
    config = (struct configuration*)shmem;
+
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   free(a);
+#endif
 
    for (int i = 0; i < config->number_of_servers; i++)
    {
       pgmoneta_log_debug("Retention (setup): %s", config->servers[i].name);
    }
 
-   pgmoneta_deque_list(nodes);
-
    return 0;
 }
 
 static int
-retention_execute(int server, char* identifier, struct deque* nodes)
+retention_execute(char* name, struct art* nodes)
 {
    char* d;
    int number_of_backups = 0;
@@ -97,6 +113,14 @@ retention_execute(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   free(a);
+#endif
+
    for (int i = 0; i < config->number_of_servers; i++)
    {
       int retention_days = -1;
@@ -105,7 +129,6 @@ retention_execute(int server, char* identifier, struct deque* nodes)
       int retention_years = -1;
 
       pgmoneta_log_debug("Retention (execute): %s", config->servers[i].name);
-      pgmoneta_deque_list(nodes);
 
       retention_days = config->servers[i].retention_days;
       if (retention_days <= 0)
@@ -137,13 +160,13 @@ retention_execute(int server, char* identifier, struct deque* nodes)
 
       if (number_of_backups > 0)
       {
-         mark_retention(server, retention_days, retention_weeks, retention_months,
+         mark_retention(i, retention_days, retention_weeks, retention_months,
                         retention_years, number_of_backups, backups, &retention_keep);
          for (int j = 0; j < number_of_backups; j++)
          {
             if (!retention_keep[j])
             {
-               pgmoneta_get_backup_child(server, backups[j], &child);
+               pgmoneta_get_backup_child(i, backups[j], &child);
                // a backup can only be deleted if it has no child
                if (!backups[j]->keep && child == NULL)
                {
@@ -214,18 +237,24 @@ retention_execute(int server, char* identifier, struct deque* nodes)
 }
 
 static int
-retention_teardown(int server, char* identifier, struct deque* nodes)
+retention_teardown(char* name, struct art* nodes)
 {
    struct configuration* config;
 
    config = (struct configuration*)shmem;
 
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   free(a);
+#endif
+
    for (int i = 0; i < config->number_of_servers; i++)
    {
       pgmoneta_log_debug("Retention (teardown): %s", config->servers[i].name);
    }
-
-   pgmoneta_deque_list(nodes);
 
    return 0;
 }

@@ -30,6 +30,7 @@
 #include <deque.h>
 #include <logging.h>
 #include <utils.h>
+#include <value.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -286,6 +287,11 @@ pgmoneta_deque_get(struct deque* deque, char* tag)
 {
    struct deque_node* n = NULL;
    uintptr_t ret = 0;
+
+#ifdef DEBUG
+   pgmoneta_log_trace("pgmoneta_deque_get: %s", tag);
+#endif
+
    deque_read_lock(deque);
    n = deque_find(deque, tag);
    if (n == NULL)
@@ -500,6 +506,28 @@ deque_offer(struct deque* deque, char* tag, uintptr_t data, enum value_type type
 {
    struct deque_node* n = NULL;
    struct deque_node* last = NULL;
+
+#ifdef DEBUG
+   if (deque == NULL)
+   {
+      pgmoneta_log_debug("Deque is NULL");
+   }
+   if (tag == NULL)
+   {
+      pgmoneta_log_debug("Tag is NULL");
+   }
+   else if (!strcmp(tag, ""))
+   {
+      pgmoneta_log_debug("Tag is empty");
+   }
+   else if (pgmoneta_deque_exists(deque, tag))
+   {
+      pgmoneta_log_debug("Tag exists: %s", tag);
+   }
+
+   pgmoneta_log_trace("pgmoneta_deque_add: %s -> %p", tag, data);
+#endif
+
    deque_node_create(data, type, tag, config, &n);
    deque_write_lock(deque);
    deque->size++;

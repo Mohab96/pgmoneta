@@ -27,6 +27,7 @@
  */
 
 #include <art.h>
+#include <logging.h>
 #include <utils.h>
 
 #include <stdbool.h>
@@ -288,13 +289,13 @@ static struct value*
 art_search(struct art* t, unsigned char* key, uint32_t key_len);
 
 static int
-art_to_json_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value);
+art_to_json_string_cb(void* param, const char* key, struct value* value);
 
 static int
-art_to_text_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value);
+art_to_text_string_cb(void* param, const char* key, struct value* value);
 
 static int
-art_to_compact_json_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value);
+art_to_compact_json_string_cb(void* param, const char* key, struct value* value);
 
 static char*
 to_json_string(struct art* t, char* tag, int indent);
@@ -329,30 +330,65 @@ pgmoneta_art_destroy(struct art* tree)
 }
 
 uintptr_t
-pgmoneta_art_search(struct art* t, unsigned char* key, uint32_t key_len)
+pgmoneta_art_search(struct art* t, char* key)
 {
-   struct value* val = art_search(t, key, key_len);
+#ifdef DEBUG
+   pgmoneta_log_trace("pgmoneta_art_search: %s", key);
+#endif
+
+   if (t == NULL || key == NULL)
+   {
+      return false;
+   }
+   struct value* val = art_search(t, (unsigned char*)key, strlen(key) + 1);
    return pgmoneta_value_data(val);
 }
 
 bool
-pgmoneta_art_contains_key(struct art* t, unsigned char* key, uint32_t key_len)
+pgmoneta_art_contains_key(struct art* t, char* key)
 {
-   struct value* val = art_search(t, key, key_len);
+   if (t == NULL || key == NULL)
+   {
+      return false;
+   }
+   struct value* val = art_search(t, (unsigned char*)key, strlen(key) + 1);
    return val != NULL;
 }
 
 int
-pgmoneta_art_insert(struct art* t, unsigned char* key, uint32_t key_len, uintptr_t value, enum value_type type)
+pgmoneta_art_insert(struct art* t, char* key, uintptr_t value, enum value_type type)
 {
    struct value* old_val = NULL;
    bool new = false;
+
+#ifdef DEBUG
    if (t == NULL)
+   {
+      pgmoneta_log_debug("ART is NULL");
+   }
+
+   if (key == NULL)
+   {
+      pgmoneta_log_debug("Key is NULL");
+   }
+   else if (!strcmp(key, ""))
+   {
+      pgmoneta_log_debug("Key is empty");
+   }
+   else if (pgmoneta_art_contains_key(t, key))
+   {
+      pgmoneta_log_debug("Key exists: %s", key);
+   }
+
+   pgmoneta_log_trace("pgmoneta_art_insert: %s -> %p", key, value);
+#endif
+
+   if (t == NULL || key == NULL)
    {
       // c'mon, at least create a tree first...
       goto error;
    }
-   old_val = art_node_insert(t->root, &t->root, 0, key, key_len, value, type, NULL, &new);
+   old_val = art_node_insert(t->root, &t->root, 0, (unsigned char*)key, strlen(key) + 1, value, type, NULL, &new);
    pgmoneta_value_destroy(old_val);
    if (new)
    {
@@ -364,16 +400,15 @@ error:
 }
 
 int
-pgmoneta_art_insert_with_config(struct art* t, unsigned char* key, uint32_t key_len, uintptr_t value, struct value_config* config)
+pgmoneta_art_insert_with_config(struct art* t, char* key, uintptr_t value, struct value_config* config)
 {
    struct value* old_val = NULL;
    bool new = false;
-   if (t == NULL)
+   if (t == NULL || key == NULL)
    {
-      // c'mon, at least create a tree first...
       goto error;
    }
-   old_val = art_node_insert(t->root, &t->root, 0, key, key_len, value, ValueRef, config, &new);
+   old_val = art_node_insert(t->root, &t->root, 0, (unsigned char*)key, strlen(key) + 1, value, ValueRef, config, &new);
    pgmoneta_value_destroy(old_val);
    if (new)
    {
@@ -385,14 +420,14 @@ error:
 }
 
 int
-pgmoneta_art_delete(struct art* t, unsigned char* key, uint32_t key_len)
+pgmoneta_art_delete(struct art* t, char* key)
 {
    struct art_leaf* l = NULL;
-   if (t == NULL)
+   if (t == NULL || key == NULL)
    {
       return 1;
    }
-   l = art_node_delete(t->root, &t->root, 0, key, key_len);
+   l = art_node_delete(t->root, &t->root, 0, (unsigned char*)key, strlen(key) + 1);
    t->size--;
    pgmoneta_value_destroy(l->value);
    free(l);
@@ -811,7 +846,7 @@ art_node_delete(struct art_node* node, struct art_node** node_ref, uint32_t dept
    else
    {
       depth += node->prefix_len;
-      if (depth > key_len)
+      if (depth >= key_len)
       {
          return NULL;
       }
@@ -855,7 +890,7 @@ art_node_iterate(struct art_node* node, art_callback cb, void* data)
    if (IS_LEAF(node))
    {
       l = GET_LEAF(node);
-      return cb(data, l->key, l->key_len, l->value);
+      return cb(data, (char*)l->key, l->value);
    }
    switch (node->type)
    {
@@ -1390,7 +1425,7 @@ pgmoneta_art_iterator_next(struct art_iterator* iter)
       if (IS_LEAF(node))
       {
          iter->count++;
-         iter->key = GET_LEAF(node)->key;
+         iter->key = (char*)GET_LEAF(node)->key;
          iter->value = GET_LEAF(node)->value;
          return true;
       }
@@ -1461,6 +1496,20 @@ pgmoneta_art_iterator_has_next(struct art_iterator* iter)
 }
 
 void
+pgmoneta_art_iterator_remove(struct art_iterator* iter)
+{
+   if (iter == NULL || iter->tree == NULL || iter->key == NULL)
+   {
+      return;
+   }
+
+   pgmoneta_art_delete(iter->tree, iter->key);
+   iter->key = NULL;
+   iter->value = NULL;
+   iter->count--;
+}
+
+void
 pgmoneta_art_iterator_destroy(struct art_iterator* iter)
 {
    if (iter == NULL)
@@ -1511,7 +1560,7 @@ art_search(struct art* t, unsigned char* key, uint32_t key_len)
          return NULL;
       }
       depth += node->prefix_len;
-      if (depth > key_len)
+      if (depth >= key_len)
       {
          return NULL;
       }
@@ -1525,7 +1574,7 @@ art_search(struct art* t, unsigned char* key, uint32_t key_len)
 }
 
 static int
-art_to_json_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value)
+art_to_json_string_cb(void* param, const char* key, struct value* value)
 {
    struct to_string_param* p = (struct to_string_param*) param;
    char* str = NULL;
@@ -1549,7 +1598,7 @@ art_to_json_string_cb(void* param, const unsigned char* key, uint32_t key_len, s
 }
 
 static int
-art_to_compact_json_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value)
+art_to_compact_json_string_cb(void* param, const char* key, struct value* value)
 {
    struct to_string_param* p = (struct to_string_param*) param;
    char* str = NULL;
@@ -1573,7 +1622,7 @@ art_to_compact_json_string_cb(void* param, const unsigned char* key, uint32_t ke
 }
 
 static int
-art_to_text_string_cb(void* param, const unsigned char* key, uint32_t key_len, struct value* value)
+art_to_text_string_cb(void* param, const char* key, struct value* value)
 {
    struct to_string_param* p = (struct to_string_param*) param;
    char* str = NULL;
@@ -1581,10 +1630,14 @@ art_to_text_string_cb(void* param, const unsigned char* key, uint32_t key_len, s
    p->cnt++;
    bool has_next = p->cnt < p->t->size;
    tag = pgmoneta_append(tag, (char*)key);
-   tag = pgmoneta_append(tag, ": ");
+   tag = pgmoneta_append(tag, ":");
    if (value->type == ValueJSON && ((struct json*) value->data)->type != JSONUnknown)
    {
       tag = pgmoneta_append(tag, "\n");
+   }
+   else
+   {
+      tag = pgmoneta_append(tag, " ");
    }
    if (pgmoneta_compare_string(p->tag, BULLET_POINT))
    {
@@ -1676,7 +1729,7 @@ to_text_string(struct art* t, char* tag, int indent)
    }
    if (t == NULL || t->size == 0)
    {
-      ret = pgmoneta_append(ret, "{}");
+      ret = pgmoneta_append(ret, "");
       return ret;
    }
    struct to_string_param param = {

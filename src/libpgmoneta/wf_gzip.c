@@ -28,6 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <deque.h>
 #include <gzip_compression.h>
 #include <logging.h>
@@ -36,13 +37,13 @@
 #include <workflow.h>
 
 /* system */
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int gzip_setup(int, char*, struct deque*);
-static int gzip_execute_compress(int, char*, struct deque*);
-static int gzip_execute_uncompress(int, char*, struct deque*);
-static int gzip_teardown(int, char*, struct deque*);
+static char* gzip_name(void);
+static int gzip_execute_compress(char*, struct art *);
+static int gzip_execute_uncompress(char*, struct art*);
 
 struct workflow*
 pgmoneta_create_gzip(bool compress)
@@ -56,7 +57,8 @@ pgmoneta_create_gzip(bool compress)
       return NULL;
    }
 
-   wf->setup = &gzip_setup;
+   wf->name = &gzip_name;
+   wf->setup = &pgmoneta_common_setup;
 
    if (compress == true)
    {
@@ -67,28 +69,23 @@ pgmoneta_create_gzip(bool compress)
       wf->execute = &gzip_execute_uncompress;
    }
 
-   wf->teardown = &gzip_teardown;
+   wf->teardown = &pgmoneta_common_teardown;
    wf->next = NULL;
 
    return wf;
 }
 
-static int
-gzip_setup(int server, char* identifier, struct deque* nodes)
+static char *
+gzip_name(void)
 {
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("GZip (setup): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
-
-   return 0;
+   return "GZip";
 }
 
 static int
-gzip_execute_compress(int server, char* identifier, struct deque* nodes)
+gzip_execute_compress(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    struct timespec start_t;
    struct timespec end_t;
    double compression_gzip_elapsed_time;
@@ -106,12 +103,24 @@ gzip_execute_compress(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("GZip (compress): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
+
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("GZip (compress): %s/%s", config->servers[server].name, label);
 
    clock_gettime(CLOCK_MONOTONIC_RAW, &start_t);
 
-   tarfile = (char*)pgmoneta_deque_get(nodes, NODE_TARFILE);
+   tarfile = (char*)pgmoneta_art_search(nodes, NODE_TARGET_FILE);
 
    if (tarfile == NULL)
    {
@@ -121,8 +130,8 @@ gzip_execute_compress(int server, char* identifier, struct deque* nodes)
          pgmoneta_workers_initialize(number_of_workers, &workers);
       }
 
-      backup_base = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_BASE);
-      backup_data = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_DATA);
+      backup_base = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_BASE);
+      backup_data = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_DATA);
 
       if (pgmoneta_gzip_data(backup_data, workers))
       {
@@ -168,7 +177,7 @@ gzip_execute_compress(int server, char* identifier, struct deque* nodes)
    memset(&elapsed[0], 0, sizeof(elapsed));
    sprintf(&elapsed[0], "%02i:%02i:%.4f", hours, minutes, seconds);
 
-   pgmoneta_log_debug("Compression: %s/%s (Elapsed: %s)", config->servers[server].name, identifier, &elapsed[0]);
+   pgmoneta_log_debug("Compression: %s/%s (Elapsed: %s)", config->servers[server].name, label, &elapsed[0]);
 
    pgmoneta_update_info_double(backup_base, INFO_COMPRESSION_GZIP_ELAPSED, compression_gzip_elapsed_time);
 
@@ -189,8 +198,10 @@ error:
 }
 
 static int
-gzip_execute_uncompress(int server, char* identifier, struct deque* nodes)
+gzip_execute_uncompress(char* name, struct art* nodes)
 {
+   int server = -1;
+   char* label = NULL;
    char* base = NULL;
    time_t decompress_time;
    int total_seconds;
@@ -204,17 +215,29 @@ gzip_execute_uncompress(int server, char* identifier, struct deque* nodes)
 
    config = (struct configuration*)shmem;
 
-   pgmoneta_log_debug("GZip (uncompress): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+#ifdef DEBUG
+   char* a = NULL;
+   a = pgmoneta_art_to_string(nodes, FORMAT_TEXT, NULL, 0);
+   pgmoneta_log_debug("(Tree)\n%s", a);
+   assert(nodes != NULL);
+   assert(pgmoneta_art_contains_key(nodes, NODE_SERVER));
+   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
+   free(a);
+#endif
 
-   base = (char*)pgmoneta_deque_get(nodes, NODE_DESTINATION);
+   server = (int)pgmoneta_art_search(nodes, NODE_SERVER);
+   label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
+
+   pgmoneta_log_debug("GZip (uncompress): %s/%s", config->servers[server].name, label);
+
+   base = (char*)pgmoneta_art_search(nodes, NODE_TARGET_BASE);
    if (base == NULL)
    {
-      base = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_BASE);
+      base = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_BASE);
    }
    if (base == NULL)
    {
-      base = (char*)pgmoneta_deque_get(nodes, NODE_BACKUP_DATA);
+      base = (char*)pgmoneta_art_search(nodes, NODE_BACKUP_DATA);
    }
 
    decompress_time = time(NULL);
@@ -241,20 +264,7 @@ gzip_execute_uncompress(int server, char* identifier, struct deque* nodes)
    memset(&elapsed[0], 0, sizeof(elapsed));
    sprintf(&elapsed[0], "%02i:%02i:%02i", hours, minutes, seconds);
 
-   pgmoneta_log_debug("Decompress: %s/%s (Elapsed: %s)", config->servers[server].name, identifier, &elapsed[0]);
-
-   return 0;
-}
-
-static int
-gzip_teardown(int server, char* identifier, struct deque* nodes)
-{
-   struct configuration* config;
-
-   config = (struct configuration*)shmem;
-
-   pgmoneta_log_debug("GZip (teardown): %s/%s", config->servers[server].name, identifier);
-   pgmoneta_deque_list(nodes);
+   pgmoneta_log_debug("Decompress: %s/%s (Elapsed: %s)", config->servers[server].name, label, &elapsed[0]);
 
    return 0;
 }

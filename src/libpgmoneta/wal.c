@@ -28,6 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <art.h>
 #include <logging.h>
 #include <management.h>
 #include <memory.h>
@@ -36,10 +37,11 @@
 #include <prometheus.h>
 #include <security.h>
 #include <server.h>
+#include <storage.h>
+#include <utils.h>
+#include <value.h>
 #include <wal.h>
 #include <workflow.h>
-#include <utils.h>
-#include <storage.h>
 
 /* system */
 #include <ctype.h>
@@ -110,7 +112,7 @@ pgmoneta_wal(int srv, char** argv)
    struct stream_buffer* buffer = NULL;
    struct workflow* head = NULL;
    struct workflow* current = NULL;
-   struct deque* nodes = NULL;
+   struct art* nodes = NULL;
 
    config = (struct configuration*) shmem;
 
@@ -160,7 +162,15 @@ pgmoneta_wal(int srv, char** argv)
    d = pgmoneta_get_server_wal(srv);
    pgmoneta_mkdir(d);
 
-   pgmoneta_deque_create(false, &nodes);
+   if (pgmoneta_art_create(&nodes))
+   {
+      goto error;
+   }
+
+   if (pgmoneta_art_insert(nodes, NODE_SERVER, (uintptr_t)srv, ValueInt32))
+   {
+      goto error;
+   }
 
    if (config->storage_engine & STORAGE_ENGINE_SSH)
    {
@@ -171,8 +181,7 @@ pgmoneta_wal(int srv, char** argv)
    current = head;
    while (current != NULL)
    {
-      if (current->setup(srv, NULL, nodes))
-      {
+      if (current->setup(current->name(), nodes)) {
          goto error;
       }
       current = current->next;
@@ -181,8 +190,7 @@ pgmoneta_wal(int srv, char** argv)
    current = head;
    while (current != NULL)
    {
-      if (current->execute(srv, NULL, nodes))
-      {
+      if (current->execute(current->name(), nodes)) {
          goto error;
       }
       current = current->next;
@@ -582,7 +590,7 @@ pgmoneta_wal(int srv, char** argv)
    current = head;
    while (current != NULL)
    {
-      current->teardown(srv, NULL, nodes);
+      current->teardown(current->name(), nodes);
 
       current = current->next;
    }
@@ -601,7 +609,7 @@ pgmoneta_wal(int srv, char** argv)
    pgmoneta_free_query_response(end_of_timeline_response);
    pgmoneta_memory_stream_buffer_free(buffer);
 
-   pgmoneta_deque_destroy(nodes);
+   pgmoneta_art_destroy(nodes);
 
    free(remain_buffer);
    free(d);
@@ -642,7 +650,7 @@ error:
    current = head;
    while (current != NULL)
    {
-      current->teardown(srv, NULL, nodes);
+      current->teardown(current->name(), nodes);
 
       current = current->next;
    }
@@ -650,7 +658,7 @@ error:
    pgmoneta_memory_destroy();
    pgmoneta_stop_logging();
 
-   pgmoneta_deque_destroy(nodes);
+   pgmoneta_art_destroy(nodes);
 
    free(remain_buffer);
    free(d);

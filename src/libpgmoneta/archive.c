@@ -29,7 +29,7 @@
 /* pgmoneta */
 #include <pgmoneta.h>
 #include <achv.h>
-#include <deque.h>
+#include <art.h>
 #include <gzip_compression.h>
 #include <info.h>
 #include <json.h>
@@ -48,7 +48,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static void write_tar_file(struct archive* a, char* current_real_path, char* current_save_path);
+static void write_tar_file(struct archive* a, char* src, char* dst);
 
 void
 pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8_t encryption, struct json* payload)
@@ -57,7 +57,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
    char* position = NULL;
    char* directory = NULL;
    char* elapsed = NULL;
-   char real_directory[MAX_PATH];
+   char* real_directory = NULL;
    struct timespec start_t;
    struct timespec end_t;
    double total_seconds;
@@ -67,7 +67,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
    struct backup* backup = NULL;
    struct workflow* workflow = NULL;
    struct workflow* current = NULL;
-   struct deque* nodes = NULL;
+   struct art* nodes = NULL;
    struct json* req = NULL;
    struct json* response = NULL;
    struct configuration* config;
@@ -86,22 +86,28 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
    position = (char*)pgmoneta_json_get(req, MANAGEMENT_ARGUMENT_POSITION);
    directory = (char*)pgmoneta_json_get(req, MANAGEMENT_ARGUMENT_DIRECTORY);
 
-   if (pgmoneta_deque_create(false, &nodes))
+   if (pgmoneta_art_create(&nodes))
    {
       goto error;
    }
 
-   if (pgmoneta_deque_add(nodes, NODE_POSITION, (uintptr_t)position, ValueString))
+   if (pgmoneta_art_insert(nodes, NODE_POSITION, (uintptr_t)position, ValueString))
    {
       goto error;
    }
 
-   if (pgmoneta_deque_add(nodes, NODE_DIRECTORY, (uintptr_t)directory, ValueString))
+   if (pgmoneta_art_insert(nodes, NODE_TARGET_ROOT, (uintptr_t)directory, ValueString))
    {
       goto error;
    }
 
-   pgmoneta_workflow_nodes(server, identifier, nodes, &backup);
+   if (pgmoneta_workflow_nodes(server, identifier, nodes, &backup))
+   {
+      pgmoneta_management_response_error(NULL, client_fd, config->servers[server].name,
+                                         MANAGEMENT_ERROR_ARCHIVE_NOBACKUP, compression, encryption, payload);
+      pgmoneta_log_warn("Archive: No identifier for %s/%s", config->servers[server].name, identifier);
+      goto error;
+   }
 
    if (backup == NULL)
    {
@@ -110,37 +116,35 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
       goto error;
    }
 
-   memset(real_directory, 0, sizeof(real_directory));
-   snprintf(real_directory, sizeof(real_directory), "%s/archive-%s-%s", directory, config->servers[server].name, backup->label);
-
-   if (!pgmoneta_restore_backup(server, identifier, position, real_directory, &output, &label))
+   real_directory = pgmoneta_append(real_directory, directory);
+   if (!pgmoneta_ends_with(real_directory, "/"))
    {
-      if (pgmoneta_deque_add(nodes, NODE_DIRECTORY, (uintptr_t)real_directory, ValueString))
-      {
-         goto error;
-      }
+      real_directory = pgmoneta_append_char(real_directory, '/');
+   }
+   real_directory = pgmoneta_append(real_directory, config->servers[server].name);
+   real_directory = pgmoneta_append_char(real_directory, '-');
+   real_directory = pgmoneta_append(real_directory, backup->label);
 
-      if (pgmoneta_deque_add(nodes, NODE_LABEL, (uintptr_t)label, ValueString))
-      {
-         goto error;
-      }
+   if (pgmoneta_exists(real_directory))
+   {
+      pgmoneta_delete_directory(real_directory);
+   }
 
-      if (pgmoneta_deque_add(nodes, NODE_OUTPUT, (uintptr_t)output, ValueString))
-      {
-         goto error;
-      }
+   pgmoneta_mkdir(real_directory);
 
-      if (pgmoneta_deque_add(nodes, NODE_DIRECTORY, (uintptr_t)directory, ValueString))
-      {
-         goto error;
-      }
+   if (pgmoneta_art_insert(nodes, NODE_TARGET_BASE, (uintptr_t)real_directory, ValueString))
+   {
+      goto error;
+   }
 
+   if (!pgmoneta_restore_backup(nodes))
+   {
       workflow = pgmoneta_workflow_create(WORKFLOW_TYPE_ARCHIVE, server, backup);
 
       current = workflow;
       while (current != NULL)
       {
-         if (current->setup(server, identifier, nodes))
+         if (current->setup(current->name(), nodes))
          {
             goto error;
          }
@@ -150,7 +154,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
       current = workflow;
       while (current != NULL)
       {
-         if (current->execute(server, identifier, nodes))
+         if (current->execute(current->name(), nodes))
          {
             goto error;
          }
@@ -160,7 +164,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
       current = workflow;
       while (current != NULL)
       {
-         if (current->teardown(server, identifier, nodes))
+         if (current->teardown(current->name(), nodes))
          {
             goto error;
          }
@@ -174,7 +178,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
          goto error;
       }
 
-      filename = pgmoneta_append(filename, (char*)pgmoneta_deque_get(nodes, NODE_TARFILE));
+      filename = pgmoneta_append(filename, (char*)pgmoneta_art_search(nodes, NODE_TARGET_FILE));
       if (config->compression_type == COMPRESSION_CLIENT_GZIP || config->compression_type == COMPRESSION_SERVER_GZIP)
       {
          filename = pgmoneta_append(filename, ".gz");
@@ -190,6 +194,11 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
       else if (config->compression_type == COMPRESSION_CLIENT_BZIP2)
       {
          filename = pgmoneta_append(filename, ".bz2");
+      }
+
+      if (config->encryption != ENCRYPTION_NONE)
+      {
+         filename = pgmoneta_append(filename, ".aes");
       }
 
       pgmoneta_json_put(response, MANAGEMENT_ARGUMENT_SERVER, (uintptr_t)config->servers[server].name, ValueString);
@@ -211,7 +220,7 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
       pgmoneta_log_info("Archive: %s/%s (Elapsed: %s)", config->servers[server].name, label, elapsed);
    }
 
-   pgmoneta_deque_destroy(nodes);
+   pgmoneta_art_destroy(nodes);
 
    pgmoneta_json_destroy(payload);
 
@@ -226,12 +235,13 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
 
    free(label);
    free(output);
+   free(real_directory);
 
    exit(0);
 
 error:
 
-   pgmoneta_deque_destroy(nodes);
+   pgmoneta_art_destroy(nodes);
 
    pgmoneta_json_destroy(payload);
 
@@ -246,6 +256,7 @@ error:
 
    free(label);
    free(output);
+   free(real_directory);
 
    exit(1);
 }
@@ -333,21 +344,21 @@ error:
 }
 
 int
-pgmoneta_tar_directory(char* src_path, char* dst_path, char* save_path)
+pgmoneta_tar_directory(char* src, char* dst, char* destination)
 {
    struct archive* a = NULL;
    int status;
 
    a = archive_write_new();
    archive_write_set_format_ustar(a);  // Set tar format
-   status = archive_write_open_filename(a, dst_path);
+   status = archive_write_open_filename(a, dst);
 
    if (status != ARCHIVE_OK)
    {
-      pgmoneta_log_error("Could not create tar file %s", dst_path);
+      pgmoneta_log_error("Could not create tar file %s", dst);
       goto error;
    }
-   write_tar_file(a, src_path, save_path);
+   write_tar_file(a, src, destination);
 
    archive_write_close(a);
    archive_write_free(a);
@@ -362,7 +373,7 @@ error:
 }
 
 static void
-write_tar_file(struct archive* a, char* current_real_path, char* current_save_path)
+write_tar_file(struct archive* a, char* src, char* dst)
 {
    char real_path[MAX_PATH];
    char save_path[MAX_PATH];
@@ -371,10 +382,10 @@ write_tar_file(struct archive* a, char* current_real_path, char* current_save_pa
    struct stat s;
    struct dirent* dent;
 
-   DIR* dir = opendir(current_real_path);
+   DIR* dir = opendir(src);
    if (!dir)
    {
-      pgmoneta_log_error("Could not open directory: %s", current_real_path);
+      pgmoneta_log_error("Could not open directory: %s", src);
       return;
    }
    while ((dent = readdir(dir)) != NULL)
@@ -386,8 +397,8 @@ write_tar_file(struct archive* a, char* current_real_path, char* current_save_pa
          continue;
       }
 
-      snprintf(real_path, sizeof(real_path), "%s/%s", current_real_path, entry_name);
-      snprintf(save_path, sizeof(save_path), "%s/%s", current_save_path, entry_name);
+      snprintf(real_path, sizeof(real_path), "%s/%s", src, entry_name);
+      snprintf(save_path, sizeof(save_path), "%s/%s", dst, entry_name);
 
       entry = archive_entry_new();
       archive_entry_copy_pathname(entry, save_path);
